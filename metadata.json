@@ -1,0 +1,6 @@
+{
+  "name": "Clinical Calm - Zero-Trust Healthcare & Medical Imaging",
+  "description": "Plateforme hospitalière zéro-trust alliant imagerie médicale DICOM chiffrée, gestion des certificats PKI et traçabilité cryptographique immuable.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
