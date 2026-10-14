@@ -3,6 +3,8 @@ import { PatientRecord, MedicalScan, Consultation, PrescriptionItem, Prescriptio
 import { hasRole } from '../../utils/authorization';
 import { DrugSafetyAlertModal } from '../clinical/DrugSafetyAlertModal';
 import { PrescriptionSealModal } from '../clinical/PrescriptionSealModal';
+import { PrescriptionPrintModal } from '../clinical/PrescriptionPrintModal';
+import { BiometricCharts } from '../clinical/BiometricCharts';
 import {
   Calendar,
   Users,
@@ -25,6 +27,8 @@ import {
   XCircle,
   ShieldAlert,
   ShieldCheck,
+  Printer,
+  TrendingUp,
 } from 'lucide-react';
 
 interface DoctorWorkstationProps {
@@ -60,21 +64,6 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
   // RBAC Guard: Only DOCTOR can access DoctorWorkstation
   const isDoctor = !currentUser || hasRole(currentUser, 'DOCTOR');
 
-  if (!isDoctor) {
-    return (
-      <div className="bg-white p-8 rounded-2xl border border-[#FECACA] shadow-xs text-center space-y-4">
-        <div className="w-12 h-12 rounded-xl bg-[#FEF2F2] border border-[#FECACA] text-[#991B1B] mx-auto flex items-center justify-center">
-          <ShieldAlert className="w-6 h-6" />
-        </div>
-        <div>
-          <h2 className="text-lg font-bold text-[#991B1B]">Accès Non Autorisé (ACCESS_DENIED)</h2>
-          <p className="text-xs text-[#6B7280] mt-1 max-w-md mx-auto">
-            L'espace Station Médicale est strictement réservé au personnel médical habilité (Rôle : DOCTOR).
-          </p>
-        </div>
-      </div>
-    );
-  }
   // Only 2 main tabs as requested: Consultations & Dossiers
   const [activeTab, setActiveTab] = useState<'consultations' | 'dossiers'>('consultations');
   const [selectedPatientId, setSelectedPatientId] = useState<string>(patients[0]?.id || '');
@@ -109,6 +98,8 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
   const [newFrequency, setNewFrequency] = useState('');
   const [newDuration, setNewDuration] = useState('');
   const [newInstructions, setNewInstructions] = useState('');
+  const [isSubmittingPrescription, setIsSubmittingPrescription] = useState(false);
+  const [prescriptionErrorMessage, setPrescriptionErrorMessage] = useState<string | null>(null);
 
   // Drug Safety & Clinical Contraindication Modal State
   const [safetyAlertModalOpen, setSafetyAlertModalOpen] = useState(false);
@@ -123,12 +114,30 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
   // Prescription Sealing Verification Modal State
   const [selectedPrescriptionForSeal, setSelectedPrescriptionForSeal] = useState<PrescriptionItem | null>(null);
   const [sealModalOpen, setSealModalOpen] = useState(false);
+  const [selectedPrescriptionForPrint, setSelectedPrescriptionForPrint] = useState<PrescriptionItem | null>(null);
+  const [showDoctorBiometricCharts, setShowDoctorBiometricCharts] = useState(false);
 
   // New Consultation Form State
   const [showAddConsultation, setShowAddConsultation] = useState(false);
   const [newConsultDateTime, setNewConsultDateTime] = useState('18 Octobre 2026 à 15:00');
   const [newConsultReason, setNewConsultReason] = useState('Contrôle clinique de routine');
   const [newConsultLocation, setNewConsultLocation] = useState('Bâtiment B - Salle 204');
+
+  if (!isDoctor) {
+    return (
+      <div className="bg-white p-8 rounded-2xl border border-[#FECACA] shadow-xs text-center space-y-4">
+        <div className="w-12 h-12 rounded-xl bg-[#FEF2F2] border border-[#FECACA] text-[#991B1B] mx-auto flex items-center justify-center">
+          <ShieldAlert className="w-6 h-6" />
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-[#991B1B]">Accès Non Autorisé (ACCESS_DENIED)</h2>
+          <p className="text-xs text-[#6B7280] mt-1 max-w-md mx-auto">
+            L'espace Station Médicale est strictement réservé au personnel médical habilité (Rôle : DOCTOR).
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // All upcoming consultations sorted
   const allConsultations: Consultation[] = patients.flatMap((p) => p.consultations);
@@ -142,49 +151,69 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
 
   const handleCreatePrescription = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMedication.trim() || !currentPatient) return;
+    if (!newMedication.trim() || !currentPatient || isSubmittingPrescription) return;
 
-    const prescription: Partial<PrescriptionItem> = {
-      id: `ORD-${Date.now().toString().slice(-4)}`,
-      medication: newMedication.trim(),
-      dosage: newDosage || 'Posologie standard',
-      frequency: newFrequency || '1 fois par jour',
-      duration: newDuration || '1 mois',
-      instructions: newInstructions || 'Respecter les heures de prise.',
-      prescribedBy: currentDoctorName,
-      datePrescribed: new Date().toLocaleDateString('fr-FR'),
-      refillsRemaining: 2,
-      status: 'ACTIVE',
-    };
+    setPrescriptionErrorMessage(null);
+    setIsSubmittingPrescription(true);
 
-    const res = await onAddPrescription(currentPatient.id, prescription);
+    try {
+      const prescription: Partial<PrescriptionItem> = {
+        id: `ORD-${Date.now().toString().slice(-4)}`,
+        medication: newMedication.trim(),
+        dosage: newDosage || 'Posologie standard',
+        frequency: newFrequency || '1 fois par jour',
+        duration: newDuration || '1 mois',
+        instructions: newInstructions || 'Respecter les heures de prise.',
+        prescribedBy: currentDoctorName,
+        datePrescribed: new Date().toLocaleDateString('fr-FR'),
+        refillsRemaining: 2,
+        status: 'ACTIVE',
+      };
 
-    // Si une contre-indication ou interaction majeure est détectée côté serveur (409)
-    if (res && (!res.success || res.code === 'ALLERGY_CONTRAINDICATION' || res.code === 'MAJOR_DRUG_INTERACTION')) {
-      if (res.code === 'ALLERGY_CONTRAINDICATION' || res.code === 'MAJOR_DRUG_INTERACTION') {
-        setPendingPrescriptionData(prescription);
-        setSafetyConflictData({
-          contraindication: res.contraindication,
-          interaction: res.interaction,
-          warnings: res.warnings,
-        });
-        setSafetyAlertModalOpen(true);
+      const res = await onAddPrescription(currentPatient.id, prescription);
+
+      // Si une contre-indication ou interaction majeure est détectée côté serveur (409 CDSS)
+      if (res && (!res.success || res.code === 'ALLERGY_CONTRAINDICATION' || res.code === 'MAJOR_DRUG_INTERACTION')) {
+        if (res.code === 'ALLERGY_CONTRAINDICATION' || res.code === 'MAJOR_DRUG_INTERACTION') {
+          setPendingPrescriptionData(prescription);
+          setSafetyConflictData({
+            contraindication: res.contraindication,
+            interaction: res.interaction,
+            warnings: res.warnings,
+          });
+          setSafetyAlertModalOpen(true);
+          return;
+        }
+
+        // Erreur serveur ou validation rejetée sans dérogation possible
+        setPrescriptionErrorMessage(res.error || "Impossible de délivrer l'ordonnance. Veuillez vérifier les paramètres saisis.");
         return;
       }
-    }
 
-    onLogActivity(
-      'Délivrance d\'ordonnance',
-      currentPatient.name,
-      `Prescription de ${newMedication} (${newFrequency}) pour ${currentPatient.name}.`,
-      'ORDONNANCE'
-    );
-    setNewMedication('');
-    setNewDosage('');
-    setNewFrequency('');
-    setNewDuration('');
-    setNewInstructions('');
-    setShowAddPrescription(false);
+      // Vérification stricte du succès pour éviter les faux positifs
+      if (!res || !res.success) {
+        setPrescriptionErrorMessage(res?.error || "Échec de l'enregistrement de l'ordonnance sur le serveur.");
+        return;
+      }
+
+      onLogActivity(
+        'Délivrance d\'ordonnance',
+        currentPatient.name,
+        `Prescription de ${newMedication} (${newFrequency}) pour ${currentPatient.name}.`,
+        'ORDONNANCE'
+      );
+      setNewMedication('');
+      setNewDosage('');
+      setNewFrequency('');
+      setNewDuration('');
+      setNewInstructions('');
+      setPrescriptionErrorMessage(null);
+      setShowAddPrescription(false);
+    } catch (err: any) {
+      setPrescriptionErrorMessage(err.message || "Une erreur inattendue est survenue lors de la prescription.");
+    } finally {
+      setIsSubmittingPrescription(false);
+    }
   };
 
   const handleConfirmOverride = async (justification: string) => {
@@ -578,15 +607,25 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
 
                 {/* Dynamic Biometrics Bar for Doctor */}
                 {currentPatient.latestVitals && (
-                  <div className="p-3.5 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB] space-y-2">
-                    <div className="flex items-center justify-between text-xs">
+                  <div className="p-3.5 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB] space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                       <span className="font-bold text-[#111827] flex items-center gap-1.5">
                         <Activity className="w-4 h-4 text-[#0D5C58]" />
                         Constantes Biométriques Récentes ({currentPatient.latestVitals.measuredAt})
                       </span>
-                      <span className="text-[11px] text-[#6B7280]">
-                        Prises par : {currentPatient.latestVitals.measuredBy || 'Patient'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-[#6B7280]">
+                          Prises par : {currentPatient.latestVitals.measuredBy || 'Patient'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowDoctorBiometricCharts((prev) => !prev)}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-[#0D5C58] bg-white hover:bg-[#E6F4F3] border border-[#99D3CF] rounded-lg transition-colors inline-flex items-center gap-1 shadow-2xs cursor-pointer"
+                        >
+                          <TrendingUp className="w-3.5 h-3.5" />
+                          <span>{showDoctorBiometricCharts ? 'Masquer les courbes' : 'Afficher les courbes d\'évolution'}</span>
+                        </button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 text-xs">
                       <div className="p-2 bg-white rounded-lg border border-[#E5E7EB]">
@@ -614,6 +653,15 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
                         <span className="font-bold text-[#111827]">{currentPatient.latestVitals.weightKg || currentPatient.weightKg} kg</span>
                       </div>
                     </div>
+
+                    {showDoctorBiometricCharts && (
+                      <div className="pt-2 border-t border-slate-200 animate-fade-in">
+                        <BiometricCharts
+                          vitals={currentPatient.vitals && currentPatient.vitals.length > 0 ? currentPatient.vitals : [currentPatient.latestVitals]}
+                          patientName={currentPatient.name}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -927,7 +975,10 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setShowAddPrescription(true)}
+                      onClick={() => {
+                        setShowAddPrescription(true);
+                        setPrescriptionErrorMessage(null);
+                      }}
                       className="px-3 py-1.5 text-xs font-semibold text-white bg-[#0D5C58] hover:bg-[#0B4E4A] rounded-lg inline-flex items-center gap-1 shadow-xs"
                     >
                       <Plus className="w-3.5 h-3.5" />
@@ -959,6 +1010,16 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
                           >
                             <ShieldCheck className="w-3.5 h-3.5 text-[#065F46]" />
                             Scellement
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPrescriptionForPrint(p)}
+                            title="Imprimer ou Exporter l'ordonnance officielle en PDF"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors cursor-pointer shadow-2xs"
+                          >
+                            <Printer className="w-3.5 h-3.5 text-slate-600" />
+                            Imprimer / PDF
                           </button>
 
                           <div className="text-right">
@@ -1006,6 +1067,16 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
                 </div>
 
                 <form onSubmit={handleCreatePrescription} className="space-y-3 text-xs">
+                  {prescriptionErrorMessage && (
+                    <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="block">Échec de la prescription</strong>
+                        <span>{prescriptionErrorMessage}</span>
+                      </div>
+                    </div>
+                  )}
+
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="block font-semibold text-[#111827]">Médicament (DCI ou Nom commercial) :</label>
@@ -1015,7 +1086,10 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
                       type="text"
                       required
                       value={newMedication}
-                      onChange={(e) => setNewMedication(e.target.value)}
+                      onChange={(e) => {
+                        setNewMedication(e.target.value);
+                        if (prescriptionErrorMessage) setPrescriptionErrorMessage(null);
+                      }}
                       placeholder="Ex: Amoxicilline 1g, Clamoxyl, Ventoline 100µg..."
                       className="w-full h-10 px-3 rounded-lg border border-[#D1D5DB] focus:ring-2 focus:ring-[#0D5C58] focus:border-transparent"
                     />
@@ -1027,7 +1101,10 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
                         <button
                           key={sug}
                           type="button"
-                          onClick={() => setNewMedication(sug)}
+                          onClick={() => {
+                            setNewMedication(sug);
+                            if (prescriptionErrorMessage) setPrescriptionErrorMessage(null);
+                          }}
                           className="px-2 py-0.5 rounded-full text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors border border-slate-200"
                         >
                           {sug}
@@ -1098,16 +1175,28 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
                   <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#E5E7EB]">
                     <button
                       type="button"
-                      onClick={() => setShowAddPrescription(false)}
-                      className="px-4 py-2 rounded-lg border border-[#D1D5DB] text-[#374151]"
+                      disabled={isSubmittingPrescription}
+                      onClick={() => {
+                        setShowAddPrescription(false);
+                        setPrescriptionErrorMessage(null);
+                      }}
+                      className="px-4 py-2 rounded-lg border border-[#D1D5DB] text-[#374151] hover:bg-[#F9FAFB] transition-colors disabled:opacity-50"
                     >
                       Annuler
                     </button>
                     <button
                       type="submit"
-                      className="px-4 py-2 font-bold text-white bg-[#0D5C58] hover:bg-[#0B4E4A] rounded-lg"
+                      disabled={isSubmittingPrescription}
+                      className="px-4 py-2 font-bold text-white bg-[#0D5C58] hover:bg-[#0B4E4A] rounded-lg disabled:opacity-50 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
                     >
-                      Délivrer & Signer l'Ordonnance
+                      {isSubmittingPrescription ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Signature en cours...
+                        </>
+                      ) : (
+                        "Délivrer & Signer l'Ordonnance"
+                      )}
                     </button>
                   </div>
                 </form>
@@ -1135,6 +1224,16 @@ export const DoctorWorkstation: React.FC<DoctorWorkstationProps> = ({
         prescription={selectedPrescriptionForSeal}
         patientName={currentPatient?.name}
       />
+
+      {/* Modal d'Impression & Export PDF de l'Ordonnance Officielle */}
+      {currentPatient && (
+        <PrescriptionPrintModal
+          isOpen={Boolean(selectedPrescriptionForPrint)}
+          onClose={() => setSelectedPrescriptionForPrint(null)}
+          prescription={selectedPrescriptionForPrint}
+          patient={currentPatient}
+        />
+      )}
     </div>
   );
 };

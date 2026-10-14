@@ -89,7 +89,7 @@ export interface Consultation {
   specialty: string;
   dateTime: string;
   location: string;
-  status: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED';
+  status: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
   preparationInstructions?: string;
   reason: string;
   notes?: string;
@@ -188,9 +188,72 @@ export interface HospitalActivityLog {
   actorName: string;
   actorRole: string;
   action: string;
-  category?: 'DOSSIER' | 'ORDONNANCE' | 'IMAGERIE' | 'CONSULTATION' | 'EQUIPEMENT' | 'CONNEXION';
+  category?: 'DOSSIER' | 'ORDONNANCE' | 'IMAGERIE' | 'CONSULTATION' | 'EQUIPEMENT' | 'CONNEXION' | 'SECURITE';
   patientName: string;
   details: string;
   previousHash?: string;
   hash?: string;
+}
+
+export interface ComplianceControl {
+  id: string;
+  title: string;
+  category: 'INTEGRITE' | 'CRYPTOGRAPHIE' | 'CONTROLE_ACCES' | 'RESILIENCE' | 'RGPD';
+  status: 'PASSED' | 'WARNING' | 'FAILED';
+  regulatoryRef: string;
+  description: string;
+  remediationStatus: string;
+}
+
+export interface ActiveUserSession {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  userRole: UserRole;
+  userTitle?: string;
+  createdAt: string;
+  expiresAt: string;
+  ip?: string;
+  userAgent?: string;
+}
+
+export interface SecurityPostureData {
+  overallScore: number;
+  rating: 'EXCELLENT' | 'SATISFAISANT' | 'ATTENTION';
+  complianceLabel: string;
+  integrity: {
+    isValid: boolean;
+    checkedCount: number;
+    brokenIndex?: number;
+    genesisHash: string;
+    latestHash?: string;
+    details?: string;
+  };
+  activeSessionsCount: number;
+  failedLoginSurveillanceCount: number;
+  totalAuditLogsCount: number;
+  controls: ComplianceControl[];
+  securityEvents: Array<{
+    id: string;
+    timestamp: string;
+    actorName: string;
+    actorRole: string;
+    action: string;
+    category?: string;
+    patientName: string;
+    details: string;
+  }>;
+  activeSessions: ActiveUserSession[];
+  systemHardening: {
+    jwtAlgorithm: string;
+    sessionDuration: string;
+    bruteForcePolicy: string;
+    wormStorage: string;
+    antiSsrfProtection: string;
+    prescriptionSeal: string;
+    cdssEngine: string;
+  };
+  durationMs: number;
+  auditedAt: string;
 }

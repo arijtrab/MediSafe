@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { MedicalScan, PrescriptionItem, PrescriptionResponse, Consultation } from './types/clinical';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './components/auth/LoginPage';
@@ -9,6 +9,7 @@ import { AdminConsole } from './components/admin/AdminConsole';
 import { DynamicImageLinkModal } from './components/DynamicImageLinkModal';
 import { VerifyView } from './components/clinical/VerifyView';
 import { canPerformClinicalAction, canManageHospitalOperations } from './utils/authorization';
+import { getUpcomingConsultationsAlerts } from './utils/consultationAlert';
 import {
   usePatients,
   useLogs,
@@ -77,6 +78,9 @@ function ClinicalCalmApp() {
   // Dynamic Image Link Modal State & Target Patient
   const [isDynamicLinkModalOpen, setIsDynamicLinkModalOpen] = useState(false);
   const [targetPatientIdForScan, setTargetPatientIdForScan] = useState<string>('PAT-2026-001');
+  const [requestedPatientTab, setRequestedPatientTab] = useState<
+    'constantes' | 'medecins' | 'consultations' | 'dossier' | 'ordonnances' | null
+  >(null);
 
   // Fullscreen Viewer State
   const [fullscreenScan, setFullscreenScan] = useState<MedicalScan | null>(null);
@@ -86,6 +90,28 @@ function ClinicalCalmApp() {
 
   // Toast Notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Current patient for patient portal (matches by name or email or defaults to first)
+  const patientProfile = useMemo(() => {
+    return (
+      patients.find(
+        (p) =>
+          p.id === currentUser?.id ||
+          p.name.toLowerCase() === currentUser?.name?.toLowerCase() ||
+          (p.email && currentUser?.email && p.email.toLowerCase() === currentUser.email.toLowerCase())
+      ) || patients[0]
+    );
+  }, [patients, currentUser]);
+
+  const targetPatientObj = useMemo(() => {
+    return patients.find((p) => p.id === targetPatientIdForScan) || patients[0];
+  }, [patients, targetPatientIdForScan]);
+
+  // Active upcoming consultation alerts (< 48h) for PATIENT role
+  const patientUpcomingAlerts = useMemo(() => {
+    if (!currentUser || currentUser.role !== 'PATIENT' || !patientProfile) return [];
+    return getUpcomingConsultationsAlerts(patientProfile.consultations || []);
+  }, [currentUser, patientProfile]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -289,20 +315,16 @@ function ClinicalCalmApp() {
     return <LoginPage />;
   }
 
-  // Current patient for patient portal (matches by name or email or defaults to first)
-  const patientProfile =
-    patients.find(
-      (p) =>
-        p.id === currentUser.id ||
-        p.name.toLowerCase() === currentUser.name.toLowerCase() ||
-        (p.email && currentUser.email && p.email.toLowerCase() === currentUser.email.toLowerCase())
-    ) || patients[0];
-  const targetPatientObj = patients.find((p) => p.id === targetPatientIdForScan) || patients[0];
-
   return (
     <div className="min-h-screen bg-[#F9FAFB] text-[#111827] flex flex-col font-sans">
-      {/* Top Bar with user badge and explicit Logout */}
-      <TopBar currentUser={currentUser} onLogout={logout} />
+      {/* Top Bar with user badge, upcoming consultation alert badge (< 48h), and explicit Logout */}
+      <TopBar
+        currentUser={currentUser}
+        onLogout={logout}
+        upcomingConsultationsCount={patientUpcomingAlerts.length}
+        upcomingUrgencyLabel={patientUpcomingAlerts[0]?.urgencyBadge}
+        onOpenConsultationsTab={() => setRequestedPatientTab('consultations')}
+      />
 
       {/* Toast Notification */}
       {toastMessage && (
@@ -327,6 +349,8 @@ function ClinicalCalmApp() {
           <PatientPortal
             patient={patientProfile}
             currentUser={currentUser}
+            requestedTab={requestedPatientTab}
+            onTabChange={(tab) => setRequestedPatientTab(tab)}
             onOpenScanViewer={(scan) => {
               setFullscreenScan(scan);
               setFullscreenZoom(1);

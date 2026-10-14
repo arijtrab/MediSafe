@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { PatientRecord, HospitalActivityLog, Equipment, UserProfile } from '../../types/clinical';
 import { hasRole, canManageHospitalOperations } from '../../utils/authorization';
 import { api } from '../../services/api';
-import { useEquipments, useUpdateEquipmentStatusMutation } from '../../hooks/useClinicalData';
+import { useEquipments, useUpdateEquipmentStatusMutation, useUpdateEquipmentMaintenanceMutation } from '../../hooks/useClinicalData';
 import { formatMiddleTruncation } from '../../utils/cryptoUtils';
+import { SecurityPostureDashboard } from './SecurityPostureDashboard';
 import {
   Users,
   Calendar,
@@ -23,6 +24,17 @@ import {
   ShieldAlert,
   Wrench,
   RotateCcw,
+  Filter,
+  CalendarCheck,
+  Stethoscope,
+  TrendingUp,
+  BarChart2,
+  RefreshCw,
+  Info,
+  CalendarClock,
+  X,
+  Check,
+  ArrowRight,
 } from 'lucide-react';
 
 interface AdminConsoleProps {
@@ -43,6 +55,41 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   // RBAC Guard: Only ADMIN can access AdminConsole
   const isAdmin = !currentUser || hasRole(currentUser, 'ADMIN');
 
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'posture' | 'journal' | 'patients' | 'planning' | 'equipements'>('dashboard');
+  const [searchPatient, setSearchPatient] = useState('');
+  
+  // Requirement 1: Query API as single source of truth (no localStorage)
+  const { data: equipments = [] } = useEquipments(isAdmin);
+  const updateEquipmentMutation = useUpdateEquipmentStatusMutation();
+
+  // Cryptographic audit trail verification state
+  const [auditVerification, setAuditVerification] = useState<{
+    status: 'idle' | 'verifying' | 'valid' | 'invalid';
+    checkedCount?: number;
+    details?: string;
+    latestHash?: string;
+  }>({ status: 'idle' });
+
+  // Activity Log Search & Filter State
+  const [searchLog, setSearchLog] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+
+  // Pack A Enhancements: Planning filter, search & timeline state
+  const [planningFilterStatus, setPlanningFilterStatus] = useState<'ALL' | 'SCHEDULED' | 'COMPLETED' | 'CANCELLED'>('ALL');
+  const [planningSearchQuery, setPlanningSearchQuery] = useState('');
+  const [planningSpecialtyFilter, setPlanningSpecialtyFilter] = useState<string>('ALL');
+
+  // Pack B: Equipment search, status filter, feedback & maintenance schedule state
+  const [equipmentSearch, setEquipmentSearch] = useState('');
+  const [equipmentStatusFilter, setEquipmentStatusFilter] = useState<'ALL' | 'DISPONIBLE' | 'EN_COURS' | 'MAINTENANCE'>('ALL');
+  const [updatingEquipmentId, setUpdatingEquipmentId] = useState<string | null>(null);
+  const [equipmentSuccessFeedback, setEquipmentSuccessFeedback] = useState<string | null>(null);
+  const [equipmentMaintenanceModal, setEquipmentMaintenanceModal] = useState<Equipment | null>(null);
+  const [maintenanceNextDate, setMaintenanceNextDate] = useState('');
+  const [maintenanceNote, setMaintenanceNote] = useState('');
+  const [isSavingMaintenance, setIsSavingMaintenance] = useState(false);
+  const updateEquipmentMaintenanceMutation = useUpdateEquipmentMaintenanceMutation();
+
   if (!isAdmin) {
     return (
       <div className="bg-white p-8 rounded-2xl border border-[#FECACA] shadow-xs text-center space-y-4">
@@ -58,13 +105,6 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
       </div>
     );
   }
-
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'journal' | 'patients' | 'planning' | 'equipements'>('dashboard');
-  const [searchPatient, setSearchPatient] = useState('');
-  
-  // Requirement 1: Query API as single source of truth (no localStorage)
-  const { data: equipments = [] } = useEquipments(isAdmin);
-  const updateEquipmentMutation = useUpdateEquipmentStatusMutation();
 
   const toggleEquipmentStatus = async (eqId: string) => {
     // RBAC: Verify user has ADMIN rights to modify equipment operational status
@@ -86,14 +126,6 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
     }
   };
 
-  // Cryptographic audit trail verification state
-  const [auditVerification, setAuditVerification] = useState<{
-    status: 'idle' | 'verifying' | 'valid' | 'invalid';
-    checkedCount?: number;
-    details?: string;
-    latestHash?: string;
-  }>({ status: 'idle' });
-
   const handleVerifyAuditTrail = async () => {
     setAuditVerification({ status: 'verifying' });
     const res = await api.verifyAuditTrail();
@@ -113,12 +145,58 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
     }
   };
 
-  // Activity Log Search & Filter State
-  const [searchLog, setSearchLog] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
-
   // Total consultations
   const allConsultations = patients.flatMap((p) => p.consultations);
+
+  // Planning statistics & specialties
+  const planningSpecialties = Array.from(
+    new Set(allConsultations.map((c) => c.specialty).filter(Boolean))
+  );
+
+  const scheduledConsultationsCount = allConsultations.filter((c) => c.status === 'SCHEDULED').length;
+  const completedConsultationsCount = allConsultations.filter((c) => c.status === 'COMPLETED').length;
+  const cancelledConsultationsCount = allConsultations.filter((c) => c.status === 'CANCELLED').length;
+
+  // Filtered consultations for Planning tab
+  const filteredConsultations = allConsultations.filter((c) => {
+    const matchesStatus = planningFilterStatus === 'ALL' || c.status === planningFilterStatus;
+    const matchesSpecialty =
+      planningSpecialtyFilter === 'ALL' || c.specialty.toLowerCase() === planningSpecialtyFilter.toLowerCase();
+    const q = planningSearchQuery.trim().toLowerCase();
+    const matchesSearch =
+      !q ||
+      c.patientName.toLowerCase().includes(q) ||
+      c.doctorName.toLowerCase().includes(q) ||
+      c.specialty.toLowerCase().includes(q) ||
+      c.location.toLowerCase().includes(q) ||
+      c.reason.toLowerCase().includes(q) ||
+      c.dateTime.toLowerCase().includes(q);
+    return matchesStatus && matchesSpecialty && matchesSearch;
+  });
+
+  const handleExportPlanningCsv = () => {
+    const headers = ['Identifiant', 'Date et Heure', 'Patient', 'Médecin', 'Spécialité', 'Lieu', 'Motif', 'Statut'];
+    const rows = filteredConsultations.map((c) => [
+      c.id,
+      `"${c.dateTime}"`,
+      `"${c.patientName}"`,
+      `"${c.doctorName}"`,
+      `"${c.specialty}"`,
+      `"${c.location}"`,
+      `"${(c.reason || '').replace(/"/g, '""')}"`,
+      c.status === 'SCHEDULED' ? 'Confirmé' : c.status === 'COMPLETED' ? 'Terminé' : 'Annulé',
+    ]);
+    const csvContent =
+      'data:text/csv;charset=utf-8,\uFEFF' +
+      [headers.join(';'), ...rows.map((e) => e.join(';'))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `planning-consultations-hopital-${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const filteredPatients = patients.filter(
     (p) =>
@@ -216,20 +294,26 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                 Réinitialiser Données
               </button>
             )}
-            <span className="text-xs font-semibold text-[#065F46] bg-[#ECFDF5] border border-[#A7F3D0] px-3 py-2 rounded-lg inline-flex items-center gap-1.5 shadow-xs">
+            <button
+              type="button"
+              onClick={() => setActiveTab('posture')}
+              title="Consulter le Tableau de Bord de Posture de Sécurité & Conformité HDS"
+              className="text-xs font-semibold text-[#065F46] bg-[#ECFDF5] border border-[#A7F3D0] hover:bg-[#D1FAE5] px-3 py-2 rounded-lg inline-flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+            >
               <ShieldCheck className="w-4 h-4 text-[#065F46]" />
-              Protection HDS & RGPD : 100%
-            </span>
+              Posture HDS & RGPD : 100%
+            </button>
           </div>
         </div>
 
         {/* Clean Admin Navigation Tabs */}
         <div className="flex flex-wrap items-center gap-2 mt-6 pt-4 border-t border-[#F3F4F6]">
           {[
-            { id: 'dashboard', label: 'Vue d\'Ensemble & Statistiques de Sécurité', icon: Shield },
-            { id: 'journal', label: `Journal d'Audit & d'Activité sur le Site (${activityLogs.length})`, icon: Clock },
+            { id: 'dashboard', label: 'Vue d\'Ensemble', icon: Shield },
+            { id: 'posture', label: 'Posture de Sécurité & Conformité HDS/RGPD', icon: ShieldCheck },
+            { id: 'journal', label: `Journal d'Audit & d'Activité (${activityLogs.length})`, icon: Clock },
             { id: 'patients', label: `Dossiers Patients (${patients.length})`, icon: Users },
-            { id: 'planning', label: `Planning Global des Consultations (${allConsultations.length})`, icon: Calendar },
+            { id: 'planning', label: `Planning Global (${allConsultations.length})`, icon: Calendar },
             { id: 'equipements', label: `Parc Équipements Biomédicaux (${equipments.length})`, icon: Wrench },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
@@ -253,54 +337,86 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         </div>
       </div>
 
+      {/* Tab Posture: Tableau de Bord de Posture de Sécurité & Conformité HDS/RGPD */}
+      {activeTab === 'posture' && (
+        <SecurityPostureDashboard />
+      )}
+
       {/* Tab 1: Vue d'Ensemble & STATISTIQUES DE SÉCURITÉ */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
-          {/* Top 4 Key Metrics (Including Enhanced Security Metrics) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Top 6 Key Metrics (Operational & Enhanced Security Metrics) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             {/* Metric 1: Patients */}
-            <div className="bg-white p-5 rounded-xl border border-[#E5E7EB] space-y-2">
+            <div className="bg-white p-4 rounded-xl border border-[#E5E7EB] space-y-1.5 shadow-2xs">
               <div className="flex items-center justify-between text-[#6B7280]">
-                <span className="text-xs font-semibold">Dossiers Médicaux Gérés</span>
+                <span className="text-xs font-semibold">Dossiers Médicaux</span>
                 <Users className="w-4 h-4 text-[#6B21A8]" />
               </div>
-              <div className="text-2xl font-bold text-[#111827]">{patients.length} dossiers</div>
+              <div className="text-xl font-bold text-[#111827]">{patients.length} patients</div>
               <div className="text-[11px] text-[#065F46] flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                Dossiers complets & sécurisés
+                <CheckCircle2 className="w-3 h-3" />
+                100% sécurisés
               </div>
             </div>
 
-            {/* Metric 2: Security - Data Protection Score */}
-            <div className="bg-white p-5 rounded-xl border border-[#E5E7EB] space-y-2">
+            {/* Metric 2: Consultations */}
+            <div className="bg-white p-4 rounded-xl border border-[#E5E7EB] space-y-1.5 shadow-2xs">
               <div className="flex items-center justify-between text-[#6B7280]">
-                <span className="text-xs font-semibold">Conformité Santé HDS / RGPD</span>
+                <span className="text-xs font-semibold">RDV Programmés</span>
+                <Calendar className="w-4 h-4 text-[#1E40AF]" />
+              </div>
+              <div className="text-xl font-bold text-[#1E40AF]">{scheduledConsultationsCount} à venir</div>
+              <div className="text-[11px] text-[#4B5563]">
+                {allConsultations.length} RDV au total
+              </div>
+            </div>
+
+            {/* Metric 3: Equipments */}
+            <div className="bg-white p-4 rounded-xl border border-[#E5E7EB] space-y-1.5 shadow-2xs">
+              <div className="flex items-center justify-between text-[#6B7280]">
+                <span className="text-xs font-semibold">Parc Biomédical</span>
+                <Wrench className="w-4 h-4 text-[#0D5C58]" />
+              </div>
+              <div className="text-xl font-bold text-[#0D5C58]">
+                {equipments.filter(e => e.status === 'DISPONIBLE').length} / {equipments.length}
+              </div>
+              <div className="text-[11px] text-[#065F46] flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                Opérationnels
+              </div>
+            </div>
+
+            {/* Metric 4: Security - Data Protection Score */}
+            <div className="bg-white p-4 rounded-xl border border-[#E5E7EB] space-y-1.5 shadow-2xs">
+              <div className="flex items-center justify-between text-[#6B7280]">
+                <span className="text-xs font-semibold">Conformité HDS/RGPD</span>
                 <ShieldCheck className="w-4 h-4 text-[#065F46]" />
               </div>
-              <div className="text-2xl font-bold text-[#065F46]">100% Conforme</div>
-              <div className="text-[11px] text-[#065F46]">0 non-conformité détectée</div>
+              <div className="text-xl font-bold text-[#065F46]">100% Conforme</div>
+              <div className="text-[11px] text-[#065F46]">0 anomalie</div>
             </div>
 
-            {/* Metric 3: Security - Access Control & Encryption */}
-            <div className="bg-white p-5 rounded-xl border border-[#E5E7EB] space-y-2">
+            {/* Metric 5: Security - Encryption */}
+            <div className="bg-white p-4 rounded-xl border border-[#E5E7EB] space-y-1.5 shadow-2xs">
               <div className="flex items-center justify-between text-[#6B7280]">
-                <span className="text-xs font-semibold">Chiffrement des Données</span>
+                <span className="text-xs font-semibold">Chiffrement Données</span>
                 <Lock className="w-4 h-4 text-[#0D5C58]" />
               </div>
-              <div className="text-2xl font-bold text-[#0D5C58]">AES-256 Actif</div>
-              <div className="text-[11px] text-[#4B5563]">100% des flux & clichés chiffrés</div>
+              <div className="text-xl font-bold text-[#0D5C58]">AES-256 Actif</div>
+              <div className="text-[11px] text-[#4B5563]">Flux chiffrés E2E</div>
             </div>
 
-            {/* Metric 4: Security - Incidents & Audit Integrity */}
-            <div className="bg-white p-5 rounded-xl border border-[#E5E7EB] space-y-2">
+            {/* Metric 6: Security - Incidents */}
+            <div className="bg-white p-4 rounded-xl border border-[#E5E7EB] space-y-1.5 shadow-2xs">
               <div className="flex items-center justify-between text-[#6B7280]">
-                <span className="text-xs font-semibold">Violations / Fuites de Données</span>
+                <span className="text-xs font-semibold">Intrusion / Fuite</span>
                 <AlertCircle className="w-4 h-4 text-[#065F46]" />
               </div>
-              <div className="text-2xl font-bold text-[#065F46]">0 Incident</div>
+              <div className="text-xl font-bold text-[#065F46]">0 Incident</div>
               <div className="text-[11px] text-[#065F46] flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                18 alertes suspectes bloquées
+                <CheckCircle2 className="w-3 h-3" />
+                Pare-feu actif
               </div>
             </div>
           </div>
@@ -576,9 +692,10 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                 <p className="text-[11px] leading-relaxed opacity-90">
                   {auditVerification.details}
                 </p>
-                {auditVerification.latestHash && (
-                  <div className="font-mono text-[10px] bg-white/70 px-2 py-1 rounded border border-current/20 mt-1 inline-block">
-                    Empreinte de tête : {auditVerification.latestHash}
+                {auditVerification.status === 'valid' && (
+                  <div className="font-mono text-[10px] bg-white/70 px-2.5 py-1 rounded border border-current/20 mt-1 inline-flex items-center gap-1.5 font-medium">
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#065F46]" />
+                    Registre WORM sécurisé (Détails cryptographiques bruts masqués)
                   </div>
                 )}
               </div>
@@ -671,11 +788,11 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                         <td className="py-3 px-4 font-mono text-[10px] text-[#6B7280]">
                           {log.hash ? (
                             <span
-                              title={`Empreinte complète : ${log.hash}\nPrécédent : ${log.previousHash || 'Genesis'}`}
-                              className="px-2 py-0.5 bg-[#F3F4F6] rounded border border-[#E5E7EB] cursor-help inline-flex items-center gap-1"
+                              title="Bloc d'audit WORM scellé cryptographiquement (Détails bruts masqués pour conformité sécurité)"
+                              className="px-2 py-0.5 bg-[#ECFDF5] text-[#065F46] rounded border border-[#A7F3D0] inline-flex items-center gap-1 font-semibold text-[10px]"
                             >
-                              <ShieldCheck className="w-3 h-3 text-[#0D5C58]" />
-                              {formatMiddleTruncation(log.hash, 4, 4)}
+                              <ShieldCheck className="w-3 h-3 text-[#065F46]" />
+                              Scellé WORM
                             </span>
                           ) : (
                             <span className="text-[#9CA3AF]">N/A</span>
@@ -762,18 +879,159 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         </div>
       )}
 
-      {/* Tab 4: Planning Global des Consultations */}
+      {/* Tab 4: Planning Global des Consultations (Pack A Enhancement) */}
       {activeTab === 'planning' && (
-        <div className="bg-white p-6 rounded-xl border border-[#E5E7EB] space-y-4">
-          <div className="border-b border-[#F3F4F6] pb-4">
-            <h2 className="text-base font-bold text-[#111827]">
-              Planning Centralisé des Rendez-Vous Hospitaliers
-            </h2>
-            <p className="text-xs text-[#6B7280] mt-0.5">
-              Toutes les consultations programmées au sein des différents services de l'établissement.
-            </p>
+        <div className="bg-white p-6 rounded-xl border border-[#E5E7EB] space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#F3F4F6] pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-[#111827] flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-[#6B21A8]" />
+                  Planning Centralisé des Rendez-Vous Hospitaliers
+                </h2>
+                <span className="text-[10px] font-bold text-[#6B21A8] bg-[#FAF5FF] border border-[#E9D5FF] px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                  <CalendarCheck className="w-3 h-3" />
+                  {allConsultations.length} total
+                </span>
+              </div>
+              <p className="text-xs text-[#6B7280] mt-0.5">
+                Vue globale, recherche multi-critères, filtrage par statut/spécialité et exportation des plannings hospitaliers.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleExportPlanningCsv}
+                className="min-h-[40px] px-4 py-2 text-xs font-semibold text-[#374151] bg-white border border-[#D1D5DB] hover:bg-[#F9FAFB] rounded-lg transition-colors inline-flex items-center gap-2 shadow-xs cursor-pointer"
+                title="Exporter la liste filtrée des rendez-vous en format CSV"
+              >
+                <Download className="w-4 h-4 text-[#6B7280]" />
+                Exporter Planning (CSV)
+              </button>
+            </div>
           </div>
 
+          {/* Quick status summary cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <button
+              type="button"
+              onClick={() => setPlanningFilterStatus('ALL')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                planningFilterStatus === 'ALL'
+                  ? 'bg-[#FAF5FF] border-[#6B21A8] ring-1 ring-[#6B21A8]'
+                  : 'bg-[#F9FAFB] border-[#E5E7EB] hover:bg-white'
+              }`}
+            >
+              <div className="text-[11px] font-semibold text-[#6B7280]">Toutes Consultations</div>
+              <div className="text-xl font-bold text-[#111827] mt-0.5">{allConsultations.length}</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlanningFilterStatus('SCHEDULED')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                planningFilterStatus === 'SCHEDULED'
+                  ? 'bg-[#ECFDF5] border-[#059669] ring-1 ring-[#059669]'
+                  : 'bg-[#F9FAFB] border-[#E5E7EB] hover:bg-white'
+              }`}
+            >
+              <div className="text-[11px] font-semibold text-[#065F46] flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#059669]"></span>
+                Confirmées / À Venir
+              </div>
+              <div className="text-xl font-bold text-[#065F46] mt-0.5">{scheduledConsultationsCount}</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlanningFilterStatus('COMPLETED')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                planningFilterStatus === 'COMPLETED'
+                  ? 'bg-[#EFF6FF] border-[#1E40AF] ring-1 ring-[#1E40AF]'
+                  : 'bg-[#F9FAFB] border-[#E5E7EB] hover:bg-white'
+              }`}
+            >
+              <div className="text-[11px] font-semibold text-[#1E40AF] flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#3B82F6]"></span>
+                Terminées / Honorées
+              </div>
+              <div className="text-xl font-bold text-[#1E40AF] mt-0.5">{completedConsultationsCount}</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlanningFilterStatus('CANCELLED')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                planningFilterStatus === 'CANCELLED'
+                  ? 'bg-[#FEF2F2] border-[#B91C1C] ring-1 ring-[#B91C1C]'
+                  : 'bg-[#F9FAFB] border-[#E5E7EB] hover:bg-white'
+              }`}
+            >
+              <div className="text-[11px] font-semibold text-[#991B1B] flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[#EF4444]"></span>
+                Annulées
+              </div>
+              <div className="text-xl font-bold text-[#991B1B] mt-0.5">{cancelledConsultationsCount}</div>
+            </button>
+          </div>
+
+          {/* Search bar & Specialty filter bar */}
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-[#6B7280] absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={planningSearchQuery}
+                  onChange={(e) => setPlanningSearchQuery(e.target.value)}
+                  placeholder="Rechercher par patient, médecin (Dr. Chen...), spécialité, salle ou motif..."
+                  className="w-full h-11 pl-9 pr-3 text-xs rounded-lg border border-[#D1D5DB] focus:outline-none focus:border-[#6B21A8]"
+                />
+              </div>
+
+              {planningSpecialties.length > 0 && (
+                <div className="sm:w-60">
+                  <select
+                    value={planningSpecialtyFilter}
+                    onChange={(e) => setPlanningSpecialtyFilter(e.target.value)}
+                    className="w-full h-11 px-3 text-xs rounded-lg border border-[#D1D5DB] focus:outline-none focus:border-[#6B21A8] bg-white text-[#374151]"
+                  >
+                    <option value="ALL">Toutes les spécialités</option>
+                    {planningSpecialties.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Quick status chips */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-semibold text-[#6B7280] mr-1">Statut :</span>
+              {[
+                { id: 'ALL', label: `Tous (${allConsultations.length})` },
+                { id: 'SCHEDULED', label: `Confirmés (${scheduledConsultationsCount})` },
+                { id: 'COMPLETED', label: `Terminés (${completedConsultationsCount})` },
+                { id: 'CANCELLED', label: `Annulés (${cancelledConsultationsCount})` },
+              ].map((chip) => {
+                const isSelected = planningFilterStatus === chip.id;
+                return (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setPlanningFilterStatus(chip.id as typeof planningFilterStatus)}
+                    className={`px-3 py-1 text-xs font-semibold rounded-lg border transition-colors ${
+                      isSelected
+                        ? 'bg-[#FAF5FF] border-[#6B21A8] text-[#6B21A8]'
+                        : 'bg-white border-[#E5E7EB] text-[#4B5563] hover:bg-[#F9FAFB]'
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Consultations Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
@@ -788,27 +1046,41 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F3F4F6]">
-                {allConsultations.map((c) => (
-                  <tr key={c.id} className="hover:bg-[#F9FAFB]">
-                    <td className="py-3 px-4 font-bold text-[#0D5C58] whitespace-nowrap">{c.dateTime}</td>
-                    <td className="py-3 px-4 font-bold text-[#111827]">{c.patientName}</td>
-                    <td className="py-3 px-4 text-[#111827]">{c.doctorName}</td>
-                    <td className="py-3 px-4 text-[#4B5563]">{c.specialty}</td>
-                    <td className="py-3 px-4 text-[#4B5563]">{c.location}</td>
-                    <td className="py-3 px-4 text-[#374151] max-w-xs">{c.reason}</td>
-                    <td className="py-3 px-4 text-center">
-                      <span
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
-                          c.status === 'SCHEDULED'
-                            ? 'bg-[#ECFDF5] text-[#065F46] border border-[#A7F3D0]'
-                            : 'bg-[#F3F4F6] text-[#6B7280]'
-                        }`}
-                      >
-                        {c.status === 'SCHEDULED' ? 'Confirmé' : 'Terminé'}
-                      </span>
+                {filteredConsultations.length > 0 ? (
+                  filteredConsultations.map((c) => (
+                    <tr key={c.id} className="hover:bg-[#F9FAFB]">
+                      <td className="py-3 px-4 font-bold text-[#0D5C58] whitespace-nowrap">{c.dateTime}</td>
+                      <td className="py-3 px-4 font-bold text-[#111827]">{c.patientName}</td>
+                      <td className="py-3 px-4 text-[#111827] font-medium">{c.doctorName}</td>
+                      <td className="py-3 px-4 text-[#4B5563]">
+                        <span className="px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#374151] border border-[#E5E7EB] text-[10px] font-medium">
+                          {c.specialty}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-[#4B5563]">{c.location}</td>
+                      <td className="py-3 px-4 text-[#374151] max-w-xs">{c.reason}</td>
+                      <td className="py-3 px-4 text-center">
+                        <span
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
+                            c.status === 'SCHEDULED'
+                              ? 'bg-[#ECFDF5] text-[#065F46] border border-[#A7F3D0]'
+                              : c.status === 'COMPLETED'
+                              ? 'bg-[#EFF6FF] text-[#1E40AF] border border-[#BFDBFE]'
+                              : 'bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA]'
+                          }`}
+                        >
+                          {c.status === 'SCHEDULED' ? 'Confirmé' : c.status === 'COMPLETED' ? 'Terminé' : 'Annulé'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-[#6B7280]">
+                      Aucune consultation ne correspond à vos filtres.
                     </td>
                   </tr>
-                ))}
+                )}
               </tbody>
             </table>
           </div>

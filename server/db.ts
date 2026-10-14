@@ -325,6 +325,25 @@ export function runMigrations() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      refresh_token TEXT UNIQUE NOT NULL,
+      ip TEXT,
+      user_agent TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS revoked_tokens (
+      jti TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      revoked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL
+    );
   `);
 
   // 2. Migration: Add previous_hash & hash columns to activity_logs if missing
@@ -359,12 +378,32 @@ export function runMigrations() {
     db.prepare('UPDATE prescriptions SET integrity_seal = ?, sealed_at = ? WHERE id = ?').run(seal, now, pr.id);
   }
 
-  // 2c. Migration: Add status column to users if missing
+  // 2c. Migration: Add status, rpps, specialty, location, bio columns to users if missing
   const userCols = (db.prepare('PRAGMA table_info(users)').all() as any[]).map((c: any) => c.name);
   if (!userCols.includes('status')) {
     db.exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'ACTIVE';");
   }
   db.exec("UPDATE users SET status = 'ACTIVE' WHERE status IS NULL OR status = '';");
+
+  if (!userCols.includes('rpps')) {
+    db.exec('ALTER TABLE users ADD COLUMN rpps TEXT;');
+  }
+  if (!userCols.includes('specialty')) {
+    db.exec('ALTER TABLE users ADD COLUMN specialty TEXT;');
+  }
+  if (!userCols.includes('location')) {
+    db.exec('ALTER TABLE users ADD COLUMN location TEXT;');
+  }
+  if (!userCols.includes('bio')) {
+    db.exec('ALTER TABLE users ADD COLUMN bio TEXT;');
+  }
+
+  // Backfill RPPS & specialties for core doctors
+  db.prepare("UPDATE users SET rpps = '10100482910', specialty = 'Pneumologie & Bilan Thoracique', location = 'Bâtiment B - Service Pneumologie, Salle 204' WHERE id = 'user_dr_chen' AND (rpps IS NULL OR rpps = '')").run();
+  db.prepare("UPDATE users SET rpps = '10100593847', specialty = 'Cardiologie & Hypertension Artérielle', location = 'Bâtiment A - Pôle Cardio-Vasculaire, Bureau 112' WHERE id = 'user_dr_martin' AND (rpps IS NULL OR rpps = '')").run();
+  db.prepare("UPDATE users SET rpps = ?, specialty = ?, location = ? WHERE id = ? AND (rpps IS NULL OR rpps = '')").run('10100827361', 'Médecine Interne & Diabétologie', 'Service de Médecine Interne & Consultations Externes', 'user_dr_zahra');
+  db.prepare("UPDATE users SET rpps = ?, specialty = ?, location = ? WHERE id = ? AND (rpps IS NULL OR rpps = '')").run('10100371945', 'Neurologie & Céphalées', 'Pavillon Neurosciences - 3ème étage, Bureau 308', 'user_dr_dubois');
+  db.prepare("UPDATE users SET rpps = ?, specialty = ?, location = ? WHERE id = ? AND (rpps IS NULL OR rpps = '')").run('10100918234', 'Radiologie & Imagerie Diagnostique', "Centre d'Imagerie Médicale Avancée, Salle R1", 'user_dr_mercier');
 
   // 3. Triggers for WORM immutability on activity_logs
   // Disables UPDATE and DELETE on activity_logs at the SQLite storage engine level
@@ -405,6 +444,14 @@ export function runMigrations() {
 
   // 8. Ensure dynamic biometric vitals exist for all patients (including Arij Trabelsi)
   ensureInitialVitalsExist();
+
+  // 9. Guarantee upcoming consultation is within < 48 hours for immediate visual alert test
+  try {
+    db.prepare("UPDATE consultations SET date_time = '13 Octobre 2026 à 14:30' WHERE id = 'RDV-2026-101'").run();
+    db.prepare("UPDATE consultations SET date_time = '13 Octobre 2026 à 16:00' WHERE id = 'CS-ARIJ-01'").run();
+  } catch (e) {
+    // Non-fatal
+  }
 }
 
 function backfillLogHashes() {
@@ -665,7 +712,7 @@ export function seedDatabase() {
     'Julien Moreau',
     'Dr. Sarah Chen',
     'Pneumologie & Bilan Thoracique',
-    '14 Octobre 2026 à 10:30',
+    '13 Octobre 2026 à 14:30',
     'Bâtiment B - Service de Pneumologie, Salle 204',
     'SCHEDULED',
     'Consultation de suivi semestriel et lecture du scanner thoracique',
@@ -751,7 +798,20 @@ export function seedDatabase() {
 // -------------------------------------------------------------
 
 export function getAllUsers() {
-  return db.prepare('SELECT id, name, email, role, title, department, phone, avatar_url as avatarUrl FROM users').all();
+  return db.prepare(`
+    SELECT id, name, email, role, title, department, phone,
+           avatar_url as avatarUrl, COALESCE(status, 'ACTIVE') as status,
+           rpps, specialty, location, bio, created_at as createdAt
+    FROM users
+    ORDER BY
+      CASE role
+        WHEN 'ADMIN' THEN 1
+        WHEN 'DOCTOR' THEN 2
+        WHEN 'PATIENT' THEN 3
+        ELSE 4
+      END,
+      name ASC
+  `).all();
 }
 
 export function getUserByEmail(email: string): UserRecord | null {
@@ -760,12 +820,40 @@ export function getUserByEmail(email: string): UserRecord | null {
 }
 
 export function getUserById(id: string) {
-  const row = db.prepare('SELECT id, name, email, role, title, department, phone, avatar_url as avatarUrl, COALESCE(status, \'ACTIVE\') as status FROM users WHERE id = ?').get(id) as any;
+  const row = db.prepare(`
+    SELECT id, name, email, role, title, department, phone,
+           avatar_url as avatarUrl, COALESCE(status, 'ACTIVE') as status,
+           rpps, specialty, location, bio, created_at as createdAt
+    FROM users WHERE id = ?
+  `).get(id) as any;
   return row || null;
 }
 
 export function setUserStatus(userId: string, status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED') {
   db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, userId);
+  // Auto-revoke active sessions when account is suspended or deactivated
+  if (status === 'SUSPENDED' || status === 'INACTIVE') {
+    revokeAllUserSessions(userId);
+  }
+}
+
+export function updateUserRole(userId: string, role: string, title?: string, department?: string) {
+  if (title && department) {
+    db.prepare('UPDATE users SET role = ?, title = ?, department = ? WHERE id = ?').run(role, title, department, userId);
+  } else if (title) {
+    db.prepare('UPDATE users SET role = ?, title = ? WHERE id = ?').run(role, title, userId);
+  } else {
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
+  }
+  return getUserById(userId);
+}
+
+export function updateUserPassword(userId: string, newPassword: string) {
+  const hashed = bcrypt.hashSync(newPassword, 10);
+  db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashed, userId);
+  // Revoke previous sessions on password change for security
+  revokeAllUserSessions(userId);
+  return true;
 }
 
 export function verifyUserPassword(user: UserRecord, plainPassword: string): boolean {
@@ -790,14 +878,73 @@ export function createUser(user: {
   title: string;
   department: string;
   phone?: string;
+  rpps?: string;
+  specialty?: string;
+  location?: string;
 }) {
   const hashedPassword = bcrypt.hashSync(user.password, 10);
   const stmt = db.prepare(`
-    INSERT INTO users (id, name, email, password, role, title, department, phone)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, name, email, password, role, title, department, phone, rpps, specialty, location, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
   `);
-  stmt.run(user.id, user.name, user.email, hashedPassword, user.role, user.title, user.department, user.phone || null);
+  stmt.run(
+    user.id,
+    user.name,
+    user.email,
+    hashedPassword,
+    user.role,
+    user.title,
+    user.department,
+    user.phone || null,
+    user.rpps || null,
+    user.specialty || null,
+    user.location || null
+  );
   return getUserById(user.id);
+}
+
+export function createPractitionerOrAdmin(data: {
+  name: string;
+  email: string;
+  password: string;
+  role: string;
+  title?: string;
+  department?: string;
+  rpps?: string;
+  phone?: string;
+  location?: string;
+  specialty?: string;
+  bio?: string;
+}) {
+  const hashedPassword = bcrypt.hashSync(data.password, 10);
+  const prefix = data.role === 'DOCTOR' ? 'user_dr' : 'user_admin';
+  const cleanName = data.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 10);
+  const id = `${prefix}_${cleanName}_${Date.now().toString().slice(-4)}`;
+
+  const resolvedTitle = data.title || (data.role === 'DOCTOR' ? `Dr. ${data.name}` : 'Administrateur Hospitalier');
+  const resolvedDept = data.department || (data.role === 'DOCTOR' ? (data.specialty ? `Pôle ${data.specialty}` : 'Service de Médecine') : 'Direction Médicale');
+  const resolvedLocation = data.location || (data.role === 'DOCTOR' ? 'Consultations Externes, Salle 104' : 'Direction des Soins');
+
+  const stmt = db.prepare(`
+    INSERT INTO users (id, name, email, password, role, title, department, phone, rpps, specialty, location, bio, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+  `);
+  stmt.run(
+    id,
+    data.name,
+    data.email,
+    hashedPassword,
+    data.role,
+    resolvedTitle,
+    resolvedDept,
+    data.phone || null,
+    data.rpps || null,
+    data.specialty || null,
+    resolvedLocation,
+    data.bio || null
+  );
+
+  return getUserById(id);
 }
 
 // -------------------------------------------------------------
@@ -1144,6 +1291,10 @@ export function deleteConsultationRecord(id: string) {
   db.prepare('DELETE FROM consultations WHERE id = ?').run(id);
 }
 
+export function cancelConsultationRecord(id: string) {
+  db.prepare("UPDATE consultations SET status = 'CANCELLED' WHERE id = ?").run(id);
+}
+
 // -------------------------------------------------------------
 // Operations: Patient Biometric Vitals & Doctor Directory
 // -------------------------------------------------------------
@@ -1387,7 +1538,7 @@ function seedArijVitals(patientId: string) {
       'Arij Trabelsi',
       'Dr. Sarah Chen',
       'Pneumologie & Explorations Fonctionnelles',
-      '15 Octobre 2026 à 11:15',
+      '13 Octobre 2026 à 16:00',
       'Bâtiment B - Service Pneumologie, Salle 204',
       'SCHEDULED',
       'Consultation de contrôle & Bilan général préventif',
@@ -1406,6 +1557,7 @@ export function getDoctorsWithDynamicSlots() {
       location: 'Bâtiment B - Service Pneumologie, Salle 204',
       bio: 'Spécialiste de la pathologie respiratoire, asthme sévère, bilan fonctionnel respiratoire et imagerie thoracique.',
       defaultSlots: [
+        '13 Octobre 2026 à 11:00',
         '14 Octobre 2026 à 14:00',
         '15 Octobre 2026 à 09:30',
         '15 Octobre 2026 à 11:15',
@@ -1523,6 +1675,19 @@ export function updateEquipmentStatus(id: string, status: string) {
   `).get(id) as any;
 }
 
+export function updateEquipmentMaintenance(id: string, nextMaintenance: string, lastMaintenance?: string) {
+  if (lastMaintenance) {
+    db.prepare('UPDATE equipments SET next_maintenance = ?, last_maintenance = ? WHERE id = ?').run(nextMaintenance, lastMaintenance, id);
+  } else {
+    db.prepare('UPDATE equipments SET next_maintenance = ? WHERE id = ?').run(nextMaintenance, id);
+  }
+  return db.prepare(`
+    SELECT id, name, type, location, status,
+           last_maintenance as lastMaintenance, next_maintenance as nextMaintenance
+    FROM equipments WHERE id = ?
+  `).get(id) as any;
+}
+
 // -------------------------------------------------------------
 // Operations: Activity Logs & Cryptographic Chain
 // -------------------------------------------------------------
@@ -1627,10 +1792,97 @@ export function verifyAuditTrailIntegrity(): {
   };
 }
 
+// -------------------------------------------------------------
+// Session Management & Active Token Revocation
+// -------------------------------------------------------------
+
+export function createUserSession(params: {
+  userId: string;
+  refreshToken: string;
+  expiresAt: string;
+  ip?: string;
+  userAgent?: string;
+}) {
+  const id = `SES-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  db.prepare(`
+    INSERT INTO user_sessions (id, user_id, refresh_token, ip, user_agent, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, params.userId, params.refreshToken, params.ip || null, params.userAgent || null, params.expiresAt);
+  return id;
+}
+
+export function getUserSessionByRefreshToken(refreshToken: string) {
+  const row = db.prepare(`
+    SELECT * FROM user_sessions
+    WHERE refresh_token = ? AND (revoked_at IS NULL OR revoked_at = '')
+  `).get(refreshToken) as any;
+  return row || null;
+}
+
+export function revokeSession(refreshToken: string) {
+  db.prepare(`
+    UPDATE user_sessions
+    SET revoked_at = CURRENT_TIMESTAMP
+    WHERE refresh_token = ?
+  `).run(refreshToken);
+}
+
+export function revokeAllUserSessions(userId: string) {
+  db.prepare(`
+    UPDATE user_sessions
+    SET revoked_at = CURRENT_TIMESTAMP
+    WHERE user_id = ? AND (revoked_at IS NULL OR revoked_at = '')
+  `).run(userId);
+}
+
+export function getUserActiveSessions(userId: string) {
+  return db.prepare(`
+    SELECT id, created_at as createdAt, expires_at as expiresAt, ip, user_agent as userAgent
+    FROM user_sessions
+    WHERE user_id = ? AND (revoked_at IS NULL OR revoked_at = '')
+    ORDER BY created_at DESC
+  `).all(userId) as any[];
+}
+
+export function getAllActiveSessionsDetailed() {
+  return db.prepare(`
+    SELECT s.id, s.user_id as userId, u.name as userName, u.email as userEmail, u.role as userRole, u.title as userTitle,
+           s.created_at as createdAt, s.expires_at as expiresAt, s.ip, s.user_agent as userAgent
+    FROM user_sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE (s.revoked_at IS NULL OR s.revoked_at = '')
+    ORDER BY s.created_at DESC
+  `).all() as any[];
+}
+
+export function revokeSessionById(sessionId: string) {
+  const result = db.prepare(`
+    UPDATE user_sessions
+    SET revoked_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND (revoked_at IS NULL OR revoked_at = '')
+  `).run(sessionId);
+  return result.changes > 0;
+}
+
+export function revokeTokenJti(jti: string, userId: string, expiresAt: string) {
+  db.prepare(`
+    INSERT OR REPLACE INTO revoked_tokens (jti, user_id, expires_at)
+    VALUES (?, ?, ?)
+  `).run(jti, userId, expiresAt);
+}
+
+export function isTokenJtiRevoked(jti: string): boolean {
+  if (!jti) return false;
+  const row = db.prepare('SELECT jti FROM revoked_tokens WHERE jti = ?').get(jti);
+  return Boolean(row);
+}
+
 export function resetAllDataToDefault() {
   // CRITICAL WORM COMPLIANCE:
   // Activity logs table is NOT purged! (Activity logs are strictly immutable and protected by trigger)
   db.exec(`
+    DELETE FROM user_sessions;
+    DELETE FROM revoked_tokens;
     DELETE FROM consultations;
     DELETE FROM medical_scans;
     DELETE FROM prescriptions;

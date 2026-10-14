@@ -773,6 +773,9 @@ describe('Suite de Tests de Sécurité & Conformité Zero-Trust (Clinical Calm)'
         location: 'Bâtiment B - Salle 204',
       };
 
+      // Garantir l'idempotence des tests répétitifs
+      db.prepare("DELETE FROM consultations WHERE doctor_name = ? AND date_time = ?").run(consultPayload.doctorName, consultPayload.dateTime);
+
       const res = await request(apiApp)
         .post('/api/consultations')
         .set('Authorization', `Bearer ${patientToken}`)
@@ -789,6 +792,109 @@ describe('Suite de Tests de Sécurité & Conformité Zero-Trust (Clinical Calm)'
 
       expect(dupRes.status).toBe(409);
       expect(dupRes.body.code).toBe('SLOT_UNAVAILABLE');
+    });
+  });
+
+  // =========================================================================
+  // 14. Gestion des Sessions Actives & Révocation Immédiate (Option 1)
+  // =========================================================================
+  describe('14. Révocation active des sessions et rotation de jetons (Option 1)', () => {
+    it('doit émettre un cookie et un refresh token lors de la connexion', async () => {
+      const loginRes = await request(apiApp)
+        .post('/api/auth/login')
+        .send({ email: 'julien.moreau@clinical-calm.demo', password: 'julien123' });
+
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.token).toBeDefined();
+      expect(loginRes.body.refreshToken).toBeDefined();
+
+      const rawCookies = loginRes.headers['set-cookie'];
+      expect(rawCookies).toBeDefined();
+      const cookieArray: string[] = Array.isArray(rawCookies) ? rawCookies : [rawCookies as string];
+      const hasAuthCookie = cookieArray.some((c: string) => typeof c === 'string' && c.includes('auth_token='));
+      expect(hasAuthCookie).toBe(true);
+    });
+
+    it('doit révoquer immédiatement le jeton lors de la déconnexion (/api/auth/logout)', async () => {
+      // 1. Obtenir un nouveau jeton dédié pour le test de déconnexion
+      const loginRes = await request(apiApp)
+        .post('/api/auth/login')
+        .send({ email: 'julien.moreau@clinical-calm.demo', password: 'julien123' });
+
+      const testToken = loginRes.body.token;
+      const testRefreshToken = loginRes.body.refreshToken;
+
+      // 2. Vérifier que le jeton fonctionne
+      const beforeRes = await request(apiApp)
+        .get('/api/patients')
+        .set('Authorization', `Bearer ${testToken}`);
+      expect(beforeRes.status).toBe(200);
+
+      // 3. Déconnexion
+      const logoutRes = await request(apiApp)
+        .post('/api/auth/logout')
+        .set('Authorization', `Bearer ${testToken}`)
+        .send({ refreshToken: testRefreshToken });
+      expect(logoutRes.status).toBe(200);
+      expect(logoutRes.body.success).toBe(true);
+
+      // 4. L'utilisation du jeton révoqué doit être IMMÉDIATEMENT rejetée (401 TOKEN_REVOKED)
+      const afterRes = await request(apiApp)
+        .get('/api/patients')
+        .set('Authorization', `Bearer ${testToken}`);
+      expect(afterRes.status).toBe(401);
+      expect(afterRes.body.code).toBe('TOKEN_REVOKED');
+    });
+
+    it('doit permettre le rafraîchissement transparent du jeton d’accès via /api/auth/refresh', async () => {
+      const loginRes = await request(apiApp)
+        .post('/api/auth/login')
+        .send({ email: 'sarah.chen@clinical-calm.demo', password: 'sarah2026' });
+
+      const refreshToken = loginRes.body.refreshToken;
+
+      const refreshRes = await request(apiApp)
+        .post('/api/auth/refresh')
+        .send({ refreshToken });
+
+      expect(refreshRes.status).toBe(200);
+      expect(refreshRes.body.success).toBe(true);
+      expect(refreshRes.body.token).toBeDefined();
+
+      // Nouveau jeton valide
+      const testNewToken = await request(apiApp)
+        .get('/api/patients')
+        .set('Authorization', `Bearer ${refreshRes.body.token}`);
+      expect(testNewToken.status).toBe(200);
+    });
+
+    it('doit lister les sessions actives de l’utilisateur et permettre la révocation globale', async () => {
+      const loginRes = await request(apiApp)
+        .post('/api/auth/login')
+        .send({ email: 'marc.lefevre@clinical-calm.demo', password: 'admin2026' });
+
+      const adminTok = loginRes.body.token;
+
+      // Obtenir la liste des sessions
+      const sessionsRes = await request(apiApp)
+        .get('/api/auth/sessions')
+        .set('Authorization', `Bearer ${adminTok}`);
+      expect(sessionsRes.status).toBe(200);
+      expect(Array.isArray(sessionsRes.body.sessions)).toBe(true);
+      expect(sessionsRes.body.sessions.length).toBeGreaterThan(0);
+
+      // Révocation de toutes les sessions
+      const revokeRes = await request(apiApp)
+        .post('/api/auth/sessions/revoke-all')
+        .set('Authorization', `Bearer ${adminTok}`);
+      expect(revokeRes.status).toBe(200);
+
+      // Le jeton utilisé doit être invalidé
+      const postRevokeRes = await request(apiApp)
+        .get('/api/auth/sessions')
+        .set('Authorization', `Bearer ${adminTok}`);
+      expect(postRevokeRes.status).toBe(401);
+      expect(postRevokeRes.body.code).toBe('TOKEN_REVOKED');
     });
   });
 });

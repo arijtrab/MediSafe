@@ -2,10 +2,14 @@ import 'dotenv/config';
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { apiRouter } from './api';
 import './db'; // ensures SQLite database migrations and tables are initialized
 
 export const apiApp = express();
+
+// Trust reverse proxy (Cloud Run, load balancers, and Vite middleware)
+apiApp.set('trust proxy', 1);
 
 // Security Headers with Helmet
 apiApp.use(
@@ -39,6 +43,7 @@ apiApp.use(
 );
 
 apiApp.use(express.json());
+apiApp.use(cookieParser());
 apiApp.use('/api', apiRouter);
 
 // Standalone mode support (e.g. node / tsx server/index.ts)

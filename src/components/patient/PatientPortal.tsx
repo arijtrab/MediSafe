@@ -11,7 +11,10 @@ import {
 } from '../../types/clinical';
 import { canAccessPatientRecord } from '../../utils/authorization';
 import { PrescriptionSealModal } from '../clinical/PrescriptionSealModal';
+import { PrescriptionPrintModal } from '../clinical/PrescriptionPrintModal';
+import { BiometricCharts } from '../clinical/BiometricCharts';
 import { useDoctors } from '../../hooks/useClinicalData';
+import { getUpcomingConsultationsAlerts, UpcomingConsultationAlert } from '../../utils/consultationAlert';
 import {
   Heart,
   User,
@@ -43,6 +46,8 @@ import {
   Trash2,
   CalendarCheck,
   History,
+  CalendarClock,
+  Bell,
 } from 'lucide-react';
 
 interface PatientPortalProps {
@@ -52,6 +57,8 @@ interface PatientPortalProps {
   onAddConsultation?: (consultation: Consultation) => Promise<{ success: boolean; error?: string }>;
   onCancelConsultation?: (consultationId: string) => Promise<void>;
   onAddVitals?: (patientId: string, vitals: Partial<PatientVitals>) => Promise<{ success: boolean; error?: string }>;
+  requestedTab?: 'constantes' | 'medecins' | 'consultations' | 'dossier' | 'ordonnances' | null;
+  onTabChange?: (tab: 'constantes' | 'medecins' | 'consultations' | 'dossier' | 'ordonnances') => void;
 }
 
 export const PatientPortal: React.FC<PatientPortalProps> = ({
@@ -61,8 +68,30 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
   onAddConsultation,
   onCancelConsultation,
   onAddVitals,
+  requestedTab,
+  onTabChange,
 }) => {
   const [activeTab, setActiveTab] = useState<'constantes' | 'medecins' | 'consultations' | 'dossier' | 'ordonnances'>('constantes');
+
+  const handleSelectTab = (tab: 'constantes' | 'medecins' | 'consultations' | 'dossier' | 'ordonnances') => {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+  };
+
+  // Synchronize when parent explicitly requests a specific tab (e.g. from TopBar alert badge click)
+  React.useEffect(() => {
+    if (requestedTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab]);
+
+  // Compute upcoming consultation alerts (< 48h)
+  const upcomingAlerts = useMemo(() => {
+    return getUpcomingConsultationsAlerts(patient.consultations || []);
+  }, [patient.consultations]);
+
+  const nearestAlert = upcomingAlerts[0] || null;
+
   const [selectedScan, setSelectedScan] = useState<MedicalScan | null>(patient.scans[0] || null);
   const [selectedPrescriptionForPrint, setSelectedPrescriptionForPrint] = useState<PrescriptionItem | null>(null);
   const [selectedPrescriptionForSeal, setSelectedPrescriptionForSeal] = useState<PrescriptionItem | null>(null);
@@ -96,6 +125,30 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
 
   // Consultation cancellation confirm modal
   const [cancelingConsultationId, setCancelingConsultationId] = useState<string | null>(null);
+
+  // Filtered doctors list
+  const filteredDoctors = useMemo(() => {
+    return doctors.filter((doc) => {
+      const matchesSpecialty =
+        selectedSpecialtyFilter === 'TOUS' ||
+        doc.specialty.toLowerCase().includes(selectedSpecialtyFilter.toLowerCase());
+      const matchesQuery =
+        !doctorSearchQuery.trim() ||
+        doc.name.toLowerCase().includes(doctorSearchQuery.toLowerCase()) ||
+        doc.specialty.toLowerCase().includes(doctorSearchQuery.toLowerCase()) ||
+        doc.department.toLowerCase().includes(doctorSearchQuery.toLowerCase());
+      return matchesSpecialty && matchesQuery;
+    });
+  }, [doctors, selectedSpecialtyFilter, doctorSearchQuery]);
+
+  // Unique specialties for filter pills
+  const availableSpecialties = useMemo(() => {
+    const set = new Set<string>();
+    doctors.forEach((d) => {
+      if (d.specialty) set.add(d.specialty.split('&')[0].trim());
+    });
+    return Array.from(set);
+  }, [doctors]);
 
   // RBAC Guard
   const isAuthorized = !currentUser || canAccessPatientRecord(currentUser, patient.id, patient.name);
@@ -133,30 +186,6 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
     parseFloat(formWeight) > 0 && formHeightMeters > 0
       ? (parseFloat(formWeight) / (formHeightMeters * formHeightMeters)).toFixed(1)
       : '22.0';
-
-  // Filtered doctors list
-  const filteredDoctors = useMemo(() => {
-    return doctors.filter((doc) => {
-      const matchesSpecialty =
-        selectedSpecialtyFilter === 'TOUS' ||
-        doc.specialty.toLowerCase().includes(selectedSpecialtyFilter.toLowerCase());
-      const matchesQuery =
-        !doctorSearchQuery.trim() ||
-        doc.name.toLowerCase().includes(doctorSearchQuery.toLowerCase()) ||
-        doc.specialty.toLowerCase().includes(doctorSearchQuery.toLowerCase()) ||
-        doc.department.toLowerCase().includes(doctorSearchQuery.toLowerCase());
-      return matchesSpecialty && matchesQuery;
-    });
-  }, [doctors, selectedSpecialtyFilter, doctorSearchQuery]);
-
-  // Unique specialties for filter pills
-  const availableSpecialties = useMemo(() => {
-    const set = new Set<string>();
-    doctors.forEach((d) => {
-      if (d.specialty) set.add(d.specialty.split('&')[0].trim());
-    });
-    return Array.from(set);
-  }, [doctors]);
 
   // Handle vitals form submission
   const handleSaveVitals = async (e: React.FormEvent) => {
@@ -260,6 +289,61 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* ⚠️ Visual Notification Alert Banner for Upcoming Consultations (< 48h) */}
+      {upcomingAlerts.length > 0 && nearestAlert && (
+        <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border-2 border-amber-400 bg-white rounded-2xl p-4 sm:p-5 shadow-xs relative overflow-hidden animate-fade-in">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs animate-pulse">
+                <CalendarClock className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2.5 py-0.5 text-[11px] font-extrabold bg-amber-500 text-white rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 shadow-2xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                    Alerte : Consultation dans moins de 48h
+                  </span>
+                  <span className="text-xs font-bold text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-md">
+                    {nearestAlert.formattedTimeLeft}
+                  </span>
+                </div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                  Rendez-vous médical avec {nearestAlert.consultation.doctorName} ({nearestAlert.consultation.specialty})
+                </h3>
+                <div className="text-xs text-slate-700 flex items-center gap-3 flex-wrap">
+                  <span className="font-semibold flex items-center gap-1 text-slate-900">
+                    <Clock className="w-3.5 h-3.5 text-amber-600" />
+                    {nearestAlert.consultation.dateTime}
+                  </span>
+                  <span className="text-slate-300">·</span>
+                  <span className="flex items-center gap-1 text-slate-600">
+                    <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                    {nearestAlert.consultation.location}
+                  </span>
+                </div>
+                {nearestAlert.consultation.preparationInstructions && (
+                  <p className="text-[11px] text-amber-900 bg-amber-50/80 p-2 rounded-lg border border-amber-200 mt-1 max-w-2xl">
+                    <strong className="text-amber-950">Consignes de préparation : </strong>
+                    {nearestAlert.consultation.preparationInstructions}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="shrink-0 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab('consultations')}
+                className="w-full sm:w-auto px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <span>Voir les détails du RDV</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Patient Header Banner */}
       <div className="bg-white p-6 rounded-2xl border border-[#E5E7EB] shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -272,6 +356,17 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
                 <span className="text-xs font-semibold text-[#0D5C58] bg-[#E6F4F3] px-2.5 py-0.5 rounded-full border border-[#99D3CF]">
                   Espace Patient Personnel
                 </span>
+                {upcomingAlerts.length > 0 && nearestAlert && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTab('consultations')}
+                    className="text-xs font-bold text-amber-950 bg-amber-400 hover:bg-amber-300 px-3 py-0.5 rounded-full border border-amber-500 inline-flex items-center gap-1.5 shadow-xs animate-pulse cursor-pointer transition-all"
+                    title={`Rendez-vous médical prévu sous 48h (${nearestAlert.formattedTimeLeft}). Cliquez pour afficher.`}
+                  >
+                    <Bell className="w-3.5 h-3.5 fill-current text-amber-900" />
+                    <span>RDV &lt; 48h : {nearestAlert.urgencyBadge}</span>
+                  </button>
+                )}
                 <span className="text-xs text-[#6B7280]">·</span>
                 <span className="text-xs text-[#6B7280]">Identifiant : {patient.id}</span>
                 <span className="text-xs text-[#6B7280]">·</span>
@@ -288,7 +383,7 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
           <div className="flex items-center gap-3 shrink-0 flex-wrap">
             <button
               type="button"
-              onClick={() => setActiveTab('medecins')}
+              onClick={() => handleSelectTab('medecins')}
               className="min-h-[44px] px-4 py-2 bg-[#0D5C58] text-white hover:bg-[#0B4E4A] font-semibold text-xs rounded-xl shadow-xs transition-all inline-flex items-center gap-2"
             >
               <Calendar className="w-4 h-4" />
@@ -314,17 +409,23 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
           {[
             { id: 'constantes', label: 'Constantes & Biométrie', icon: Activity },
             { id: 'medecins', label: `Annuaire Médecins & Prise de RDV (${doctors.length})`, icon: Stethoscope },
-            { id: 'consultations', label: `Mes Rendez-Vous (${patient.consultations.filter((c) => c.status === 'SCHEDULED').length})`, icon: Calendar },
+            {
+              id: 'consultations',
+              label: `Mes Rendez-Vous (${patient.consultations.filter((c) => c.status === 'SCHEDULED').length})`,
+              icon: Calendar,
+              hasAlert: upcomingAlerts.length > 0,
+              alertCount: upcomingAlerts.length,
+            },
             { id: 'dossier', label: `Dossier Médical & Examens (${patient.scans.length})`, icon: FileText },
             { id: 'ordonnances', label: `Ordonnances (${patient.prescriptions.filter((p) => p.status === 'ACTIVE').length} actives)`, icon: Pill },
-          ].map((tab) => {
+          ].map((tab: any) => {
             const isActive = activeTab === tab.id;
             const Icon = tab.icon;
             return (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                onClick={() => handleSelectTab(tab.id)}
                 className={`min-h-[42px] px-4 py-2 text-xs font-semibold rounded-lg border transition-all inline-flex items-center gap-2 ${
                   isActive
                     ? 'bg-[#0D5C58] text-white border-[#0D5C58] shadow-xs'
@@ -332,7 +433,12 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
                 }`}
               >
                 <Icon className="w-4 h-4" />
-                {tab.label}
+                <span>{tab.label}</span>
+                {tab.hasAlert && (
+                  <span className="px-2 py-0.5 text-[10px] font-extrabold bg-amber-500 text-white rounded-full animate-pulse shadow-2xs">
+                    RDV &lt; 48h
+                  </span>
+                )}
               </button>
             );
           })}
@@ -384,6 +490,52 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
               Nouvelle Saisie des Constantes
             </button>
           </div>
+
+          {/* 🔔 Home Page Consultation Alert Widget (< 48h) */}
+          {upcomingAlerts.length > 0 && nearestAlert && (
+            <div className="bg-gradient-to-r from-amber-500/10 via-amber-50 to-white border-2 border-amber-400/80 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fade-in">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs animate-bounce">
+                  <CalendarClock className="w-5 h-5" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2.5 py-0.5 text-[11px] font-extrabold bg-amber-600 text-white rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 shadow-2xs">
+                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                      Alerte : Consultation dans moins de 48h
+                    </span>
+                    <span className="text-xs font-bold text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-md">
+                      {nearestAlert.formattedTimeLeft}
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    Rappel : Consultation avec {nearestAlert.consultation.doctorName} ({nearestAlert.consultation.specialty})
+                  </h4>
+                  <p className="text-xs text-slate-600 flex items-center gap-2 flex-wrap">
+                    <span className="flex items-center gap-1 font-semibold text-slate-900">
+                      <Clock className="w-3.5 h-3.5 text-amber-600" />
+                      {nearestAlert.consultation.dateTime}
+                    </span>
+                    <span>·</span>
+                    <span className="flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                      {nearestAlert.consultation.location}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab('consultations')}
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-xs transition-colors inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <span>Gérer mon rendez-vous</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Vitals Grid Gauges */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -610,6 +762,9 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Interactive Biometric Evolution Charts */}
+          <BiometricCharts vitals={vitalsList} patientName={patient.name} />
 
           {/* Historical Readings Table */}
           <div className="bg-white p-6 rounded-2xl border border-[#E5E7EB] shadow-xs space-y-4">
@@ -978,18 +1133,22 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
             <div className="space-y-4">
               {patient.consultations.map((c) => {
                 const isScheduled = c.status === 'SCHEDULED';
+                const matchedAlert = upcomingAlerts.find((a) => a.consultation.id === c.id);
+                const isWithin48h = Boolean(matchedAlert);
                 return (
                   <div
                     key={c.id}
                     className={`p-5 rounded-xl border transition-all ${
-                      isScheduled
+                      isWithin48h
+                        ? 'bg-amber-50/40 border-amber-400 shadow-sm ring-2 ring-amber-300'
+                        : isScheduled
                         ? 'bg-white border-[#0D5C58]/30 shadow-xs ring-1 ring-[#0D5C58]/10'
                         : 'bg-[#F9FAFB] border-[#E5E7EB] opacity-80'
                     }`}
                   >
                     <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                       <div className="space-y-2 flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span
                             className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
                               isScheduled
@@ -999,12 +1158,18 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
                           >
                             {isScheduled ? 'Rendez-vous Confirmé' : 'Consultation Passée'}
                           </span>
+                          {isWithin48h && (
+                            <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full bg-amber-500 text-white shadow-2xs animate-pulse inline-flex items-center gap-1">
+                              <CalendarClock className="w-3 h-3" />
+                              Rendez-vous dans moins de 48h ({matchedAlert?.urgencyBadge})
+                            </span>
+                          )}
                           <span className="text-xs text-[#6B7280]">·</span>
                           <span className="text-xs font-semibold text-[#111827]">{c.specialty}</span>
                         </div>
 
                         <h3 className="text-base font-bold text-[#111827] flex items-center gap-2">
-                          <Clock className="w-4 h-4 text-[#0D5C58]" />
+                          <Clock className={`w-4 h-4 ${isWithin48h ? 'text-amber-600' : 'text-[#0D5C58]'}`} />
                           {c.dateTime}
                         </h3>
 
@@ -1737,68 +1902,13 @@ export const PatientPortal: React.FC<PatientPortalProps> = ({
         </div>
       )}
 
-      {/* Printable Prescription Modal */}
-      {selectedPrescriptionForPrint && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-900/50 animate-fade-in"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="bg-white rounded-2xl border border-[#E5E7EB] shadow-2xl max-w-lg w-full p-6 space-y-6">
-            <div className="flex items-start justify-between border-b border-[#E5E7EB] pb-4">
-              <div>
-                <h3 className="text-lg font-bold text-[#111827]">Ordonnance Médicale</h3>
-                <p className="text-xs text-[#6B7280]">Centre Hospitalier Universitaire</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedPrescriptionForPrint(null)}
-                className="text-[#6B7280] hover:text-[#111827] p-1"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="text-xs text-[#4B5563] space-y-1">
-              <div>Patient : <strong>{patient.name}</strong> ({patient.age} ans)</div>
-              <div>Prescripteur : <strong>{selectedPrescriptionForPrint.prescribedBy}</strong></div>
-              <div>Date : {selectedPrescriptionForPrint.datePrescribed}</div>
-            </div>
-
-            <div className="p-4 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB] space-y-2">
-              <div className="font-bold text-[#111827] text-sm">{selectedPrescriptionForPrint.medication}</div>
-              <div className="text-xs font-medium text-[#0D5C58]">{selectedPrescriptionForPrint.dosage}</div>
-              <div className="text-xs text-[#374151]">{selectedPrescriptionForPrint.frequency}</div>
-              <div className="text-xs text-[#6B7280]">Durée : {selectedPrescriptionForPrint.duration}</div>
-              {selectedPrescriptionForPrint.instructions && (
-                <div className="text-xs text-[#4B5563] italic pt-1 border-t border-[#E5E7EB]">
-                  Instructions : {selectedPrescriptionForPrint.instructions}
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setSelectedPrescriptionForPrint(null)}
-                className="min-h-[40px] px-4 text-xs font-medium text-[#374151] hover:bg-[#F3F4F6] rounded-lg border border-[#D1D5DB]"
-              >
-                Fermer
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  window.print();
-                }}
-                className="min-h-[40px] px-4 text-xs font-bold text-white bg-[#0D5C58] hover:bg-[#0B4E4A] rounded-lg inline-flex items-center gap-1.5"
-              >
-                <Printer className="w-4 h-4" />
-                Imprimer l'Ordonnance
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Official Certified Printable & Downloadable PDF Prescription Modal */}
+      <PrescriptionPrintModal
+        isOpen={Boolean(selectedPrescriptionForPrint)}
+        onClose={() => setSelectedPrescriptionForPrint(null)}
+        prescription={selectedPrescriptionForPrint}
+        patient={patient}
+      />
 
       {/* Modal de Scellement d'Intégrité SHA-256 */}
       <PrescriptionSealModal

@@ -2,23 +2,8 @@ import { UserProfile, PatientRecord, Equipment, HospitalActivityLog } from '../t
 import chestCtScan from '../assets/images/medical_chest_ct_scan_1791409426968.jpg';
 import doctorPortrait from '../assets/images/doctor_clinician_portrait_1791409437198.jpg';
 
-export const DEMO_CREDENTIALS: Record<string, { email: string; password: string; userId: string }> = {
-  PATIENT: {
-    email: 'julien.moreau@clinical-calm.demo',
-    password: 'julien123',
-    userId: 'user_patient_julien',
-  },
-  DOCTOR: {
-    email: 'sarah.chen@clinical-calm.demo',
-    password: 'sarah2026',
-    userId: 'user_dr_chen',
-  },
-  ADMIN: {
-    email: 'marc.lefevre@clinical-calm.demo',
-    password: 'admin2026',
-    userId: 'user_admin_marc',
-  },
-};
+// Sécurité : Les identifiants et mots de passe ne sont jamais stockés en clair côté client.
+// L'authentification s'effectue exclusivement via le serveur sécurisé avec hachage Bcrypt.
 
 export const USER_PROFILES: UserProfile[] = [
   {
@@ -162,7 +147,7 @@ export const INITIAL_PATIENTS: PatientRecord[] = [
         patientName: 'Julien Moreau',
         doctorName: 'Dr. Sarah Chen',
         specialty: 'Pneumologie & Bilan Thoracique',
-        dateTime: '14 Octobre 2026 à 10:30',
+        dateTime: '13 Octobre 2026 à 14:30',
         location: 'Bâtiment B - Service de Pneumologie, Salle 204',
         status: 'SCHEDULED',
         reason: 'Consultation de suivi semestriel et lecture du scanner thoracique',

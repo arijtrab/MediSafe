@@ -197,6 +197,27 @@ export function useUpdateEquipmentStatusMutation() {
   });
 }
 
+export function useUpdateEquipmentMaintenanceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      equipmentId,
+      nextMaintenance,
+      lastMaintenance,
+      note,
+    }: {
+      equipmentId: string;
+      nextMaintenance: string;
+      lastMaintenance?: string;
+      note?: string;
+    }) => api.updateEquipmentMaintenance(equipmentId, nextMaintenance, lastMaintenance, note),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.equipments });
+      queryClient.invalidateQueries({ queryKey: queryKeys.logs });
+    },
+  });
+}
+
 export function useAddLogMutation() {
   const queryClient = useQueryClient();
   return useMutation({

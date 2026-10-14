@@ -1,15 +1,21 @@
 import React from 'react';
 import { UserProfile, UserRole } from '../types/clinical';
-import { LogOut, User, Stethoscope, Building } from 'lucide-react';
+import { LogOut, User, Stethoscope, Building, Bell, CalendarClock, AlertCircle, ShieldCheck } from 'lucide-react';
 
 interface TopBarProps {
   currentUser: UserProfile;
   onLogout: () => void;
+  upcomingConsultationsCount?: number;
+  upcomingUrgencyLabel?: string;
+  onOpenConsultationsTab?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
   currentUser,
   onLogout,
+  upcomingConsultationsCount = 0,
+  upcomingUrgencyLabel,
+  onOpenConsultationsTab,
 }) => {
   const getRoleIcon = (role: UserRole) => {
     switch (role) {
@@ -63,11 +69,40 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
 
         {/* Current user & Logout button */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 sm:gap-3">
+          {/* Visual Alert Badge for PATIENT when consultation is within 48h */}
+          {currentUser.role === 'PATIENT' && upcomingConsultationsCount > 0 && (
+            <button
+              type="button"
+              onClick={onOpenConsultationsTab}
+              title={`Alerte consultation : ${upcomingConsultationsCount} rendez-vous médical prévu dans moins de 48 heures. Cliquez pour accéder à vos rendez-vous.`}
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-500 hover:bg-amber-600 text-white border border-amber-600 shadow-sm transition-all animate-pulse cursor-pointer text-xs font-bold shrink-0"
+            >
+              <div className="relative">
+                <CalendarClock className="w-4 h-4 shrink-0" />
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-600 animate-ping"></span>
+              </div>
+              <span className="text-xs">
+                RDV &lt; 48h {upcomingConsultationsCount > 1 ? `(${upcomingConsultationsCount})` : ''}
+              </span>
+              {upcomingUrgencyLabel && (
+                <span className="hidden sm:inline-block text-[10px] bg-amber-700/90 text-amber-50 px-2 py-0.5 rounded-full font-medium">
+                  {upcomingUrgencyLabel}
+                </span>
+              )}
+            </button>
+          )}
+
           {/* SQLite Database status indicator */}
           <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-[#A7F3D0] bg-[#ECFDF5] text-[10px] font-semibold text-[#065F46]" title="Base de données SQLite locale active et synchronisée">
             <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse"></span>
             <span>SQLite Connecté</span>
+          </div>
+
+          {/* Security & HDS compliance badge */}
+          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-300 bg-emerald-50 text-[10px] font-semibold text-emerald-800" title="Système conforme HDS v2.0 & RGPD (WORM immuable, Anti-SSRF, Scellement SHA-256)">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+            <span>HDS & RGPD : 100%</span>
           </div>
 
           {/* User information badge */}

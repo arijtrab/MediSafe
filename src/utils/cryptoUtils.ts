@@ -52,16 +52,14 @@ export function formatMiddleTruncation(hash: string, leadLength: number = 8, tai
 }
 
 /**
- * Generate a simulated Ed25519 cryptographic token with expiry for dynamic image links
+ * Masks a cryptographic hash or sensitive digest for safe display in UI/logs,
+ * preventing cleartext cryptographic leakage and reconnaissance.
+ * e.g., "SHA256:••••••••a8b3"
  */
-export function generateSignedToken(resourceId: string, ttlMinutes: number = 60): { token: string; expiresAt: string } {
-  const expires = new Date(Date.now() + ttlMinutes * 60 * 1000);
-  const randomBytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join('');
-  const token = `sig_ed25519_${resourceId.toLowerCase()}_${randomBytes}`;
-  return {
-    token,
-    expiresAt: expires.toISOString(),
-  };
+export function maskCryptoHash(hash?: string, visibleTail: number = 4): string {
+  if (!hash) return '••••••••';
+  if (hash.length <= visibleTail) return '••••••••';
+  return `SHA256:••••••••${hash.slice(-visibleTail)}`;
 }
 
 /**

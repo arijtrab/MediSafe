@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, ShieldAlert, X, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, X, Copy, Check, ExternalLink, RefreshCw, Code } from 'lucide-react';
 import { api } from '../../services/api';
 import { PrescriptionItem } from '../../types/clinical';
+import { maskCryptoHash } from '../../utils/cryptoUtils';
 
 interface PrescriptionSealModalProps {
   isOpen: boolean;
@@ -171,22 +172,22 @@ export const PrescriptionSealModal: React.FC<PrescriptionSealModalProps> = ({
             </div>
           </div>
 
-          {/* SHA-256 Hash Display */}
+          {/* SHA-256 Hash Display (Masked to prevent cleartext cryptographic exposure) */}
           <div className="p-4 rounded-xl bg-[#111827] text-white space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-neutral-400">
-                Empreinte SHA-256 (Scellement d'intégrité) :
+                Sceau d'intégrité (Empreinte SHA-256 protégée) :
               </span>
               <span className="text-[10px] text-[#A7F3D0] bg-[#065F46] px-2 py-0.5 rounded">
-                SHA-256 HASH
+                PROTÉGÉ
               </span>
             </div>
-            <div className="p-2.5 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-[11px] text-[#34D399] break-all select-all">
-              {sealHash}
+            <div className="p-2.5 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-[11px] text-[#34D399] tracking-wider">
+              {sealHash ? maskCryptoHash(sealHash, 6) : '••••••••••••••••'}
             </div>
             {prescription.sealedAt && (
               <div className="text-[10px] text-neutral-400">
-                Horodatage du scellement : {new Date(prescription.sealedAt).toLocaleString('fr-FR')}
+                Horodatage du scellement : {new Date(prescription.sealedAt).toLocaleString('fr-FR')} · Détail masqué pour sécurité
               </div>
             )}
           </div>

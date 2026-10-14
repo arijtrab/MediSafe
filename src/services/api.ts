@@ -10,6 +10,8 @@ import {
   HospitalActivityLog,
   PatientVitals,
   DoctorProfile,
+  SecurityPostureData,
+  ActiveUserSession,
 } from '../types/clinical';
 
 const BASE_URL = '/api';
@@ -128,7 +130,21 @@ export const api = {
   },
 
   logout() {
+    const currentToken = getToken();
+    if (currentToken) {
+      request('/auth/logout', { method: 'POST' }).catch(() => {});
+    }
     setToken(null);
+  },
+
+  async getSessions(): Promise<any[]> {
+    const res = await request<{ success: boolean; sessions: any[] }>('/auth/sessions');
+    return res.ok && res.data ? res.data.sessions : [];
+  },
+
+  async revokeAllSessions(): Promise<boolean> {
+    const res = await request('/auth/sessions/revoke-all', { method: 'POST' });
+    return res.ok;
   },
 
   // Patients
@@ -278,6 +294,22 @@ export const api = {
     return { success: false, error: res.error };
   },
 
+  async updateEquipmentMaintenance(
+    equipmentId: string,
+    nextMaintenance: string,
+    lastMaintenance?: string,
+    note?: string
+  ): Promise<{ success: boolean; equipment?: Equipment; error?: string }> {
+    const res = await request<{ success: boolean; equipment: Equipment }>('/equipments/' + equipmentId + '/maintenance', {
+      method: 'PUT',
+      body: JSON.stringify({ nextMaintenance, lastMaintenance, note }),
+    });
+    if (res.ok && res.data) {
+      return { success: true, equipment: res.data.equipment };
+    }
+    return { success: false, error: res.error };
+  },
+
   // Logs & Audit
   async getLogs(): Promise<HospitalActivityLog[]> {
     const res = await request<HospitalActivityLog[]>('/logs');
@@ -309,5 +341,59 @@ export const api = {
       method: 'POST',
     });
     return res.ok;
+  },
+
+  // Security Posture & Compliance Endpoints
+  async getSecurityPosture(): Promise<SecurityPostureData | null> {
+    const res = await request<SecurityPostureData>('/security/posture');
+    return res.ok && res.data ? res.data : null;
+  },
+
+  async verifySecurityIntegrity(): Promise<{
+    isValid: boolean;
+    checkedCount: number;
+    brokenIndex?: number;
+    genesisHash: string;
+    latestHash?: string;
+    details?: string;
+    durationMs?: number;
+    verifiedBy?: string;
+    verifiedAt?: string;
+  } | null> {
+    const res = await request<{
+      isValid: boolean;
+      checkedCount: number;
+      brokenIndex?: number;
+      genesisHash: string;
+      latestHash?: string;
+      details?: string;
+      durationMs?: number;
+      verifiedBy?: string;
+      verifiedAt?: string;
+    }>('/security/audit/verify-integrity', {
+      method: 'POST',
+    });
+    return res.ok && res.data ? res.data : null;
+  },
+
+  async getActiveSessions(): Promise<ActiveUserSession[]> {
+    const res = await request<ActiveUserSession[]>('/security/sessions');
+    return res.ok && res.data ? res.data : [];
+  },
+
+  async revokeActiveSession(sessionId: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    const res = await request<{ success: boolean; message: string }>('/security/sessions/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId }),
+    });
+    if (res.ok && res.data) {
+      return { success: true, message: res.data.message };
+    }
+    return { success: false, error: res.error || 'Impossible de révoquer la session.' };
+  },
+
+  async getSecurityAuditReport(): Promise<any | null> {
+    const res = await request<any>('/security/audit-report');
+    return res.ok && res.data ? res.data : null;
   },
 };
